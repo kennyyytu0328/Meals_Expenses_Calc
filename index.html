@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智慧餐費結帳系統(自備API Key))</title>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+
+    <!-- Google Generative AI SDK -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/generative-ai": "https://esm.run/@google/generative-ai"
+        }
+      }
+    </script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f3f4f6; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
+        }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Custom Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { height: 8px; width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import { GoogleGenerativeAI } from "@google/generative-ai";
+
+        // Helper component for Lucide Icons
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const ref = React.useRef(null);
+
+            React.useEffect(() => {
+                if (!ref.current) return;
+                
+                const iconElement = document.createElement('i');
+                iconElement.setAttribute('data-lucide', name);
+                
+                ref.current.innerHTML = '';
+                ref.current.appendChild(iconElement);
+                
+                lucide.createIcons({
+                    root: ref.current,
+                    attrs: {
+                        width: size,
+                        height: size,
+                        class: className
+                    }
+                });
+            }, [name, size, className]);
+
+            return <span ref={ref} className="inline-flex items-center justify-center" />;
+        };
+
+        const App = () => {
+            // State for API Key and UI flow
+            const [apiKey, setApiKey] = React.useState("");
+            const [showSettings, setShowSettings] = React.useState(true);
+
+            const [file, setFile] = React.useState(null);
+            const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+            const [parsedData, setParsedData] = React.useState([]);
+            const [error, setError] = React.useState("");
+            const [uploadStep, setUploadStep] = React.useState(1);
+
+            // Load API Key from localStorage on component mount
+            React.useEffect(() => {
+                const savedKey = localStorage.getItem("mealwise_gemini_key");
+                if (savedKey) {
+                    setApiKey(savedKey);
+                    setShowSettings(false);
+                }
+            }, []);
+
+            // Save Key to localStorage
+            const saveApiKey = (key) => {
+                setApiKey(key);
+                localStorage.setItem("mealwise_gemini_key", key);
+                if (key) setShowSettings(false);
+            };
+
+            // Clear Key from localStorage
+            const clearApiKey = () => {
+                setApiKey("");
+                localStorage.removeItem("mealwise_gemini_key");
+                setParsedData([]);
+                setFile(null);
+                setUploadStep(1);
+                setShowSettings(true);
+            };
+
+            // Helper to render PDF page to base64 image
+            const pdfToImage = async (file) => {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const page = await pdf.getPage(1); 
+                const viewport = page.getViewport({ scale: 2.0 }); 
+                
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                await page.render({ canvasContext: context, viewport: viewport }).promise;
+                return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            };
+
+            const handleFileUpload = async (e) => {
+                const selectedFile = e.target.files[0];
+                if (selectedFile && selectedFile.type === "application/pdf") {
+                    setFile(selectedFile);
+                    setError("");
+                    processPDF(selectedFile);
+                } else {
+                    setError("請上傳 PDF 格式的檔案");
+                }
+            };
+
+            const processPDF = async (pdfFile) => {
+                if (!apiKey) {
+                    setError("請先設定 Gemini API Key 才能進行解析");
+                    setShowSettings(true);
+                    setFile(null);
+                    return;
+                }
+
+                setIsAnalyzing(true);
+                setUploadStep(2);
+                try {
+                    // 1. Get Image
+                    const base64Image = await pdfToImage(pdfFile);
+
+                    // 2. Call Gemini using the stored Key
+                    const genAI = new GoogleGenerativeAI(apiKey);
+
+                    // 使用有效的 Gemini 模型名稱
+                    // 確認您的 API Key 是在 Google AI Studio 申請的 (非 Vertex AI)
+                    // 網址: https://aistudio.google.com/app/apikey
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+                    const prompt = `
+                        你是一個專業的資料擷取機器人。請分析這張餐費報表圖片。
+                        任務：
+                        1. 找出表格中所有員工的數據。
+                        2. 提取 '員工編號' (Employee ID), '姓名' (Name), '應收餐費' (Total Due)。
+                        3. 忽略總計行。
+                        4. 按照 '應收餐費' 由高到低排序，並給予 'rank'。
+                        
+                        輸出格式必須是純 JSON Array，不要有 markdown 標記：
+                        [
+                            { "rank": 1, "empId": "001", "name": "王小明", "due": 1000 },
+                            ...
+                        ]
+                    `;
+
+                    const result = await model.generateContent([
+                        prompt,
+                        { inlineData: { data: base64Image, mimeType: "image/jpeg" } }
+                    ]);
+
+                    const responseText = result.response.text();
+                    // Clean up markdown if Gemini adds it despite instructions
+                    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+                    const data = JSON.parse(cleanJson);
+
+                    // Initialize local state for interactive columns
+                    const enrichedData = data.map(item => ({
+                        ...item,
+                        // Ensure due is a number
+                        due: parseInt(item.due, 10) || 0,
+                        received: "", // Empty initially
+                        change: 0 - (parseInt(item.due, 10) || 0) // Initial change state
+                    }));
+
+                    setParsedData(enrichedData);
+                    setUploadStep(3);
+
+                } catch (err) {
+                    console.error(err);
+                    let errMsg = err.message;
+                    if (errMsg.includes("403") || errMsg.includes("API key")) {
+                        errMsg = "API Key 無效或額度不足，請檢查設定。";
+                    }
+                    setError("解析失敗: " + errMsg);
+                    setUploadStep(1);
+                    setFile(null);
+                } finally {
+                    setIsAnalyzing(false);
+                }
+            };
+
+            // Handle Input Change
+            const handleReceivedChange = (index, value) => {
+                // Validation: Numeric only
+                const numValue = value === "" ? "" : parseInt(value, 10);
+                
+                // Limit range 1-50000 (soft limit)
+                if (numValue !== "" && (numValue < 0 || numValue > 50000)) return;
+
+                const newData = [...parsedData];
+                newData[index].received = numValue;
+                
+                // Calculate Change
+                const receivedAmount = numValue === "" ? 0 : numValue;
+                newData[index].change = receivedAmount - newData[index].due;
+                
+                setParsedData(newData);
+            };
+
+            // Summary Stats
+            const totalDue = parsedData.reduce((acc, curr) => acc + curr.due, 0);
+            const totalReceived = parsedData.reduce((acc, curr) => acc + (curr.received || 0), 0);
+            const completionRate = totalDue > 0 ? Math.round((totalReceived / totalDue) * 100) : 0;
+
+            // --- API Key Settings Panel ---
+            if (showSettings && uploadStep === 1) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
+                        <div className="glass-panel p-8 rounded-2xl max-w-md w-full">
+                            <div className="flex justify-center mb-6 text-blue-600">
+                                <Icon name="lock" size={48} />
+                            </div>
+                            <h2 className="text-2xl font-bold text-center text-gray-800 mb-2">設定 Gemini API Key</h2>
+                            <p className="text-gray-500 text-sm text-center mb-6">
+                                本系統採用 BYOK (自帶API Key) 架構。Key 會儲存在您的本地瀏覽器，不會公開。
+                            </p>
+                            
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">您的 Gemini API Key</label>
+                                    <input 
+                                        type="password" 
+                                        value={apiKey}
+                                        onChange={(e) => setApiKey(e.target.value)}
+                                        placeholder="AIzaSy..."
+                                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                                    />
+                                </div>
+                                <button 
+                                    onClick={() => saveApiKey(apiKey)}
+                                    disabled={!apiKey}
+                                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg disabled:opacity-50 transition-colors"
+                                >
+                                    進入系統並儲存 Key
+                                </button>
+                                <p className="text-xs text-center text-gray-400 mt-4">
+                                    沒有 Key? <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline text-blue-500 hover:text-blue-600">點此免費申請</a>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+            // --- End API Key Settings Panel ---
+
+
+            // --- Main Application UI ---
+            return (
+                <div className="min-h-screen p-4 md:p-8 max-w-6xl mx-auto">
+                    {/* Header */}
+                    <header className="mb-8 flex items-center justify-between">
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+                                <Icon name="utensils" className="text-blue-600" />
+                                MealWise AI
+                            </h1>
+                            <p className="text-gray-500 text-sm mt-1">智慧餐費結帳助手 • BYOK 安全版</p>
+                        </div>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={clearApiKey}
+                                className="px-3 py-1 bg-white border border-gray-200 text-gray-600 rounded-lg text-xs hover:bg-red-50 hover:text-red-600 flex items-center gap-1 transition-colors"
+                            >
+                                <Icon name="key-round" size={14} /> 重設 Key
+                            </button>
+                             <span className="hidden md:inline-block px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+                                Beta v1.2 (BYOK Mode)
+                            </span>
+                        </div>
+                    </header>
+
+                    {/* Main Content */}
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                        
+                        {/* Sidebar / Upload Area */}
+                        <div className="lg:col-span-1 space-y-4">
+                            <div className="glass-panel p-6 rounded-2xl text-center">
+                                {uploadStep === 1 && (
+                                    <div className="animate-fade-in">
+                                        <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <Icon name="upload-cloud" size={32} />
+                                        </div>
+                                        <h3 className="font-semibold text-gray-700 mb-2">上傳餐費 PDF</h3>
+                                        <p className="text-xs text-gray-400 mb-4">支援單頁報表解析</p>
+                                        
+                                        <label className="block w-full">
+                                            <span className="sr-only">Choose file</span>
+                                            <input type="file" 
+                                                accept=".pdf"
+                                                onChange={handleFileUpload}
+                                                className="block w-full text-sm text-slate-500
+                                                file:mr-4 file:py-2 file:px-4
+                                                file:rounded-full file:border-0
+                                                file:text-sm file:font-semibold
+                                                file:bg-blue-50 file:text-blue-700
+                                                hover:file:bg-blue-100 cursor-pointer"
+                                            />
+                                        </label>
+                                        {error && <p className="text-red-500 text-xs mt-3">{error}</p>}
+                                    </div>
+                                )}
+
+                                {uploadStep === 2 && (
+                                    <div className="py-8 animate-fade-in">
+                                        <div className="animate-spin w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                                        <p className="text-gray-600 font-medium">AI 正在解析報表...</p>
+                                        <p className="text-xs text-gray-400 mt-2">使用您的 Key 呼叫 Gemini Flash</p>
+                                    </div>
+                                )}
+
+                                {uploadStep === 3 && (
+                                    <div className="animate-fade-in">
+                                        <div className="w-16 h-16 bg-green-50 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <Icon name="check-circle" size={32} />
+                                        </div>
+                                        <h3 className="font-semibold text-gray-700">解析完成</h3>
+                                        <p className="text-xs text-gray-400 mb-4">{file?.name}</p>
+                                        <button 
+                                            onClick={() => { setParsedData([]); setFile(null); setUploadStep(1); }}
+                                            className="text-sm text-blue-600 hover:text-blue-800 underline"
+                                        >
+                                            重新上傳
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Summary Card */}
+                            {uploadStep === 3 && (
+                                <div className="glass-panel p-6 rounded-2xl animate-fade-in space-y-4">
+                                    <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">總計資訊</h4>
+                                    
+                                    <div>
+                                        <p className="text-xs text-gray-500">本月應收總額</p>
+                                        <p className="text-2xl font-bold text-gray-800">${totalDue.toLocaleString()}</p>
+                                    </div>
+
+                                    <div>
+                                        <p className="text-xs text-gray-500">目前實收總額</p>
+                                        <p className={`text-2xl font-bold ${totalReceived >= totalDue ? 'text-green-600' : 'text-blue-600'}`}>
+                                            ${totalReceived.toLocaleString()}
+                                        </p>
+                                    </div>
+
+                                    <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                        <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-500" style={{ width: `${Math.min(completionRate, 100)}%` }}></div>
+                                    </div>
+                                    <p className="text-right text-xs text-gray-500">{completionRate}% 完成</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Main Table Area */}
+                        <div className="lg:col-span-3">
+                            {uploadStep === 3 ? (
+                                <div className="glass-panel rounded-2xl overflow-hidden shadow-lg animate-fade-in flex flex-col h-[calc(100vh-140px)] lg:h-auto">
+                                    <div className="p-4 border-b border-gray-100 bg-white/50 flex justify-between items-center">
+                                        <h3 className="font-bold text-gray-700">餐費明細表</h3>
+                                        <span className="text-xs bg-gray-100 px-2 py-1 rounded text-gray-500">{parsedData.length} 位員工</span>
+                                    </div>
+                                    
+                                    <div className="overflow-x-auto overflow-y-auto custom-scrollbar flex-1">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-gray-50/50 sticky top-0 z-10 backdrop-blur-sm">
+                                                <tr>
+                                                    <th className="p-4 text-xs font-semibold text-gray-500 w-16 text-center">排名</th>
+                                                    <th className="p-4 text-xs font-semibold text-gray-500">員工資訊</th>
+                                                    <th className="p-4 text-xs font-semibold text-gray-500 text-right">應收金額</th>
+                                                    <th className="p-4 text-xs font-semibold text-blue-600 w-40">已收金額 (輸入)</th>
+                                                    <th className="p-4 text-xs font-semibold text-gray-500 text-right w-32">找零 / 結餘</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white/40">
+                                                {parsedData.map((row, idx) => (
+                                                    <tr key={row.empId} className="hover:bg-blue-50/30 transition-colors">
+                                                        <td className="p-4 text-center">
+                                                            <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold 
+                                                                ${idx === 0 ? 'bg-yellow-100 text-yellow-700' : 
+                                                                  idx === 1 ? 'bg-gray-200 text-gray-700' : 
+                                                                  idx === 2 ? 'bg-orange-100 text-orange-700' : 'text-gray-400'}`}>
+                                                                {idx + 1}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <div className="font-bold text-gray-800">{row.name}</div>
+                                                            <div className="text-xs text-gray-400">{row.empId}</div>
+                                                        </td>
+                                                        <td className="p-4 text-right font-medium text-gray-700">
+                                                            ${row.due.toLocaleString()}
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <div className="relative">
+                                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
+                                                                <input 
+                                                                    type="number"
+                                                                    min="0"
+                                                                    max="50000"
+                                                                    value={row.received}
+                                                                    placeholder="0"
+                                                                    onChange={(e) => handleReceivedChange(idx, e.target.value)}
+                                                                    className="w-full pl-6 pr-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-sm"
+                                                                />
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4 text-right">
+                                                            <span className={`font-bold px-3 py-1 rounded-full text-sm block w-fit ml-auto
+                                                                ${row.change >= 0 
+                                                                    ? 'bg-green-100 text-green-700' 
+                                                                    : 'bg-red-50 text-red-600'
+                                                                }`}>
+                                                                {row.change >= 0 ? `找零 $${row.change.toLocaleString()}` : `不足 $${Math.abs(row.change).toLocaleString()}`}
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-gray-300 space-y-4 min-h-[400px] border-2 border-dashed border-gray-200 rounded-2xl">
+                                    <Icon name="layout-template" size={48} className="opacity-20" />
+                                    <p>請先在左側上傳 PDF 報表以產生數據</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
