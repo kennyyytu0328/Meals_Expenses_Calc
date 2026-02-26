@@ -95,12 +95,23 @@
             const [error, setError] = React.useState("");
             const [uploadStep, setUploadStep] = React.useState(1);
 
-            // Load API Key from localStorage on component mount
+            // Load API Key and persisted data from localStorage on component mount
             React.useEffect(() => {
                 const savedKey = localStorage.getItem("mealwise_gemini_key");
                 if (savedKey) {
                     setApiKey(savedKey);
                     setShowSettings(false);
+                }
+                const savedData = localStorage.getItem("mealwise_parsed_data");
+                const savedFileName = localStorage.getItem("mealwise_file_name");
+                if (savedData) {
+                    try {
+                        setParsedData(JSON.parse(savedData));
+                        setUploadStep(3);
+                        if (savedFileName) setFile({ name: savedFileName });
+                    } catch (e) {
+                        localStorage.removeItem("mealwise_parsed_data");
+                    }
                 }
             }, []);
 
@@ -115,6 +126,8 @@
             const clearApiKey = () => {
                 setApiKey("");
                 localStorage.removeItem("mealwise_gemini_key");
+                localStorage.removeItem("mealwise_parsed_data");
+                localStorage.removeItem("mealwise_file_name");
                 setParsedData([]);
                 setFile(null);
                 setUploadStep(1);
@@ -205,6 +218,8 @@
                     }));
 
                     setParsedData(enrichedData);
+                    localStorage.setItem("mealwise_parsed_data", JSON.stringify(enrichedData));
+                    localStorage.setItem("mealwise_file_name", pdfFile.name);
                     setUploadStep(3);
 
                 } catch (err) {
@@ -231,12 +246,13 @@
 
                 const newData = [...parsedData];
                 newData[index].received = numValue;
-                
+
                 // Calculate Change
                 const receivedAmount = numValue === "" ? 0 : numValue;
                 newData[index].change = receivedAmount - newData[index].due;
-                
+
                 setParsedData(newData);
+                localStorage.setItem("mealwise_parsed_data", JSON.stringify(newData));
             };
 
             // Summary Stats
@@ -357,8 +373,8 @@
                                         </div>
                                         <h3 className="font-semibold text-gray-700">解析完成</h3>
                                         <p className="text-xs text-gray-400 mb-4">{file?.name}</p>
-                                        <button 
-                                            onClick={() => { setParsedData([]); setFile(null); setUploadStep(1); }}
+                                        <button
+                                            onClick={() => { setParsedData([]); setFile(null); setUploadStep(1); localStorage.removeItem("mealwise_parsed_data"); localStorage.removeItem("mealwise_file_name"); }}
                                             className="text-sm text-blue-600 hover:text-blue-800 underline"
                                         >
                                             重新上傳

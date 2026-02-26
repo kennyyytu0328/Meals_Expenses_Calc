@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "react": "^19.1.2",
+    "react-dom": "^19.1.2",
+    "react-server-dom-webpack": "^19.1.2"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  },
+  "scripts": {
+    "dev": "serve -s . -l 8080"
+  }
+}
