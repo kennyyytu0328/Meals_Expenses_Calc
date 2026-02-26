@@ -10,6 +10,7 @@
 - BYOK（Bring Your Own Key）：API Key 儲存在使用者瀏覽器 localStorage（item key: `mealwise_gemini_key`）。
 - 使用 PDF.js 將第一頁 PDF 轉成 base64 圖像並發送給 Gemini 模型進行表格擷取。
 - 解析結果會顯示為可互動的表格，允許輸入已收金額並自動計算找零與總計。
+- **資料持久化**：解析結果與已收金額輸入會儲存於 localStorage（item key: `mealwise_parsed_data`、`mealwise_file_name`），重新整理頁面後資料不會消失。
 - UI 使用 Tailwind CSS + Lucide Icons。
 
 如何運作（程式碼參考）
@@ -42,7 +43,9 @@
 3. 上傳 PDF（單頁報表）至側邊上傳區塊（僅接受 `.pdf`）。
 4. 等待 AI 解析（進度會顯示中）。
 5. 解析完成後，會以由高到低排序排名及 `due`（應收金額）列出各員工；可於「已收金額」輸入欄位輸入實收金額以計算找零。
-6. 可以按「重設 Key」以清除本地儲存與回到設定畫面。
+6. 重新整理頁面後，解析結果與已輸入金額會自動還原（資料存於 localStorage）。
+7. 若需解析新報表，按「重新上傳」清除舊資料並重新上傳 PDF。
+8. 可以按「重設 Key」以清除所有本地儲存（包含資料與 Key）並回到設定畫面。
 
 注意事項 / 限制
 - 只支援單頁 PDF 的第一頁解析（在 [`pdfToImage`](index.html)）— 若要支援多頁，需擴充迴圈/頁面管理。
